@@ -114,7 +114,7 @@ def main():
     # ✅ تعديل 3: إضافة معالج لإغلاق الجلسات عند إيقاف البوت
     async def shutdown(application):
         logger.info("Shutting down... Closing database connections")
-        db.Session.remove()
+        db.engine.dispose()
     
     application.post_shutdown = shutdown
 

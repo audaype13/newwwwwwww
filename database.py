@@ -8,7 +8,7 @@ try:
     from sqlalchemy.orm import declarative_base
 except ImportError:
     from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 
 # إعداد MySQL
@@ -17,6 +17,8 @@ _db_logger.info(f"Connecting to DB: {DATABASE_URL.split('@')[1] if '@' in DATABA
 engine = create_engine(
     DATABASE_URL,
     echo=False,
+    pool_size=10,
+    max_overflow=20,
     pool_recycle=3600,
     pool_pre_ping=True,
     connect_args={
@@ -26,8 +28,7 @@ engine = create_engine(
 )
 
 Base = declarative_base()
-session_factory = sessionmaker(bind=engine)
-Session = scoped_session(session_factory)
+Session = sessionmaker(bind=engine)
 
 # --- تعريف الجداول ---
 # ملاحظة: create_all يتم استدعاؤه من main.py فقط بعد التحقق من الاتصال
