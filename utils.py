@@ -2,15 +2,21 @@ import logging
 import asyncio
 import random
 from datetime import datetime
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 import database as db
 import config
 from keyboards import get_back_keyboard
 
+try:
+    import pyrogram
+    pyrogram_available = True
+except ImportError:
+    pyrogram_available = False
+
 logger = logging.getLogger(__name__)
 
-async def is_bot_admin_in_channel(bot, user_id, channel_id):
+async def is_bot_admin_in_channel(bot, channel_id):
     try:
         chat_member = await bot.get_chat_member(channel_id, bot.id)
         return chat_member.status in ['administrator', 'creator']
@@ -59,7 +65,7 @@ async def post_job(context: ContextTypes.DEFAULT_TYPE, force_one=False):
     with db.get_db_session() as session:
         setting = session.query(db.BotSettings).filter_by(key='posting_status').first()
         
-        print(f"--- Job Check --- Status: {setting.value if setting else 'None'}, Force: {force_one}")
+        logger.debug(f"Job Check - Status: {setting.value if setting else 'None'}, Force: {force_one}")
 
         if not force_one and (not setting or setting.value == 'off'):
             return
@@ -80,10 +86,11 @@ async def post_job(context: ContextTypes.DEFAULT_TYPE, force_one=False):
                 'last_post_at': ch.last_post_at,
                 'sticker_file_id': ch.sticker_file_id,
                 'sticker_interval': ch.sticker_interval,
+                'sticker_sender_id': ch.sticker_sender_id,
                 'msg_counter': ch.msg_counter
             })
         
-        print(f"Found {len(channels_data)} active channels.")
+        logger.debug(f"Found {len(channels_data)} active channels.")
 
     if not channels_data:
         return
@@ -99,18 +106,26 @@ async def post_job(context: ContextTypes.DEFAULT_TYPE, force_one=False):
                 should_post = True
                 reason = "Force Post"
             elif channel_data['time_type'] == 'default':
+                # نشر عشوائي مع حد أدنى 3 ساعات بين المنشورات
                 if random.random() < 0.05:
-                    should_post = True
-                    reason = "Random Post (5%)"
-            
+                    if channel_data['last_post_at']:
+                        diff = now - channel_data['last_post_at']
+                        if diff.total_seconds() >= 3 * 3600:
+                            should_post = True
+                            reason = "Random Post (5%, min 3h)"
+                    else:
+                        should_post = True
+                        reason = "Random Post (first)"
+
             elif channel_data['time_type'] == 'fixed':
                 if channel_data['time_value']:
                     allowed_hours = [int(h.strip()) for h in channel_data['time_value'].split(',')]
                     current_hour = now.hour
                     if current_hour in allowed_hours:
                         if channel_data['last_post_at']:
-                            last_hour = channel_data['last_post_at'].hour
-                            if last_hour != current_hour:
+                            diff = now - channel_data['last_post_at']
+                            # نشر مرة واحدة في الساعة المحددة (فارق أكثر من 30 دقيقة)
+                            if diff.total_seconds() >= 1800:
                                 should_post = True
                                 reason = f"Fixed Time {current_hour}"
                         else:
@@ -153,14 +168,33 @@ async def post_job(context: ContextTypes.DEFAULT_TYPE, force_one=False):
                             
                             if db_channel.msg_counter >= channel_data['sticker_interval']:
                                 try:
-                                    # إرسال الملصق بشكل مستقل
-                                    await context.bot.send_sticker(
-                                        chat_id=channel_data['channel_id'],
-                                        sticker=channel_data['sticker_file_id']
-                                    )
-                                    
+                                    sender_id = channel_data.get('sticker_sender_id')
+                                    sent = False
+
+                                    # إرسال عبر Pyrogram كمستخدم لو sender_id محدد
+                                    if sender_id and pyrogram_available:
+                                        try:
+                                            from main import app_client
+                                            if app_client:
+                                                async with app_client:
+                                                    await app_client.send_sticker(
+                                                        chat_id=channel_data['channel_id'],
+                                                        sticker=channel_data['sticker_file_id']
+                                                    )
+                                                sent = True
+                                                logger.info(f"Sticker sent via Pyrogram to {db_channel.title}")
+                                        except Exception as e:
+                                            logger.warning(f"Pyrogram sticker failed, falling back to bot: {e}")
+
+                                    # fallback: إرسال عبر البوت
+                                    if not sent:
+                                        await context.bot.send_sticker(
+                                            chat_id=channel_data['channel_id'],
+                                            sticker=channel_data['sticker_file_id']
+                                        )
+                                        logger.info(f"Sticker sent via bot to {db_channel.title}")
+
                                     db_channel.msg_counter = 0
-                                    logger.info(f"Sticker sent via post_job to {db_channel.title}")
                                 except Exception as e:
                                     logger.error(f"Error sending sticker: {e}")
                 
@@ -176,7 +210,6 @@ async def post_job(context: ContextTypes.DEFAULT_TYPE, force_one=False):
 
         except Exception as e:
             logger.error(f"ERROR in {channel_data.get('title', 'Unknown')}: {e}")
-            print(f"ERROR in {channel_data.get('title', 'Unknown')}: {e}")
             asyncio.create_task(notify_dev(
                 context,
                 f"⚠️ <b>خطأ في النشر التلقائي</b>\n📢 القناة: <b>{channel_data.get('title', 'Unknown')}</b>\n❌ الخطأ: <code>{e}</code>"

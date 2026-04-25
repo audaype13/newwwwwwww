@@ -1,5 +1,4 @@
 import logging
-import asyncio
 from sqlalchemy import text
 from telegram.ext import (
     Application,
@@ -39,21 +38,26 @@ async def error_handler(update, context):
         pass
 
 # إعداد Pyrogram Client (اختياري)
-try:
-    app_client = pyrogram.Client(
-        "bot_account",
-        api_id=config.API_ID,
-        api_hash=config.API_HASH,
-        bot_token=config.TOKEN
-    )
-    pyrogram_available = True
-except AttributeError:
-    app_client = None
-    pyrogram_available = False
-    print("تنبية api id و api hash غير موجودين ")
+app_client = None
+if pyrogram_available and config.API_ID and config.API_HASH:
+    try:
+        app_client = pyrogram.Client(
+            "bot_account",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            bot_token=config.TOKEN
+        )
+        logger.info("Pyrogram client initialized")
+    except Exception as e:
+        app_client = None
+        logger.warning(f"Pyrogram client failed to initialize: {e}")
+else:
+    logger.info("Pyrogram not available or API credentials missing - stickers will use bot account")
 
 def main():
-    # ✅ تعديل 1: إضافة try-except لإنشاء الجداول مع معالجة أخطاء MySQL
+    # التحقق من الإعدادات أولاً
+    config.validate_config()
+
     try:
         db.Base.metadata.create_all(db.engine)
         logger.info("Database tables created/verified successfully")
@@ -118,7 +122,7 @@ def main():
     job_queue = application.job_queue
     job_queue.run_repeating(utils.post_job, interval=60, first=10)
 
-    print("Bot is running...")
+    logger.info("Bot is running...")
     application.run_polling(allowed_updates=["message", "callback_query", "chat_member", "my_chat_member", "channel_post"])
 
 if __name__ == '__main__':
